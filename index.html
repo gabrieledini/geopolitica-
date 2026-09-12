@@ -53,8 +53,7 @@ summary{cursor:pointer;color:var(--ink)}
       <select id="span">
         <option value="4w">4 settimane</option>
         <option value="12w" selected>12 settimane</option>
-        <option value="6m">6 mesi</option>
-        <option value="12m">12 mesi</option>
+        <option value="3m">3 mesi (massimo GDELT)</option>
       </select>
     </label>
   </div>
@@ -81,7 +80,7 @@ xinhuanet.com</textarea>
 <details>
   <summary>Come leggere i grafici</summary>
   <p>Le linee colorate sono il tono medio (GDELT, scala circa −10…+10) degli articoli di ciascuna fonte che citano lo stato e le parole chiave del tema. La linea grigia tratteggiata è la deviazione standard tra le fonti in quella settimana: quando scende, le fonti stanno convergendo; quando sale, divergono. Il tono è un proxy grezzo della posizione: misura quanto il linguaggio è positivo o negativo, non a favore di chi. Settimane senza articoli per una fonte vengono ignorate nel calcolo.</p>
-  <p>GDELT accetta circa una richiesta ogni 5 secondi: con 3 temi e 4 fonti l'analisi dura circa un minuto.</p>
+  <p>GDELT accetta circa una richiesta ogni 5 secondi e copre solo gli ultimi 3 mesi: con 3 temi e 4 fonti l'analisi dura circa un minuto.</p>
 </details>
 </main>
 
@@ -103,16 +102,33 @@ function parseSources(t){
 
 async function fetchTone(state, kw, domain, span, proxy){
   const q = `${state} ${kw} domain:${domain}`;
-  const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=timelinetone&timespan=${span}&timelinesmooth=2&format=json`;
-  const res = await fetch(proxy ? proxy + encodeURIComponent(url) : url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const text = await res.text();
+  const base = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=timelinetone&timespan=${span}&timelinesmooth=2`;
   let json;
-  try { json = JSON.parse(text); } catch { throw new Error(text.slice(0, 120) || 'risposta non JSON'); }
+  if (proxy) {
+    const res = await fetch(proxy + encodeURIComponent(base + '&format=json'));
+    const text = await res.text();
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
+    try { json = JSON.parse(text); } catch { throw new Error('GDELT: ' + text.replace(/<[^>]+>/g, '').trim().slice(0, 160)); }
+  } else {
+    json = await jsonp(base);                  // JSONP: nessun vincolo CORS
+  }
   const series = (json.timeline || [])[0];
   const map = new Map();
   (series?.data || []).forEach(p => map.set(p.date.slice(0, 8), p.value));
   return map;
+}
+
+function jsonp(url){
+  return new Promise((resolve, reject) => {
+    const cb = 'gd' + Math.random().toString(36).slice(2);
+    const s = document.createElement('script');
+    const timer = setTimeout(() => { cleanup(); reject(new Error('timeout: GDELT non ha risposto in 25 s (rate limit o query rifiutata)')); }, 25000);
+    function cleanup(){ clearTimeout(timer); delete window[cb]; s.remove(); }
+    window[cb] = data => { cleanup(); resolve(data); };
+    s.onerror = () => { cleanup(); reject(new Error('richiesta rifiutata da GDELT (429 rate limit o query non valida)')); };
+    s.src = `${url}&format=jsonp&callback=${cb}`;
+    document.head.appendChild(s);
+  });
 }
 
 function weekKey(yyyymmdd){
@@ -207,7 +223,7 @@ $('#run').addEventListener('click', async () => {
         perSource.push({ domain, map: new Map(), error: e.message });
       }
       done++;
-      if (done < total) await sleep(5200);
+      if (done < total) await sleep(6000);
     }
     theme.sources = sources;
     const agg = aggregate(perSource);
@@ -216,7 +232,7 @@ $('#run').addEventListener('click', async () => {
     if (errs.length) {
       const p = document.createElement('p'); p.className = 'err theme';
       p.textContent = `${theme.label}: nessun dato da ${errs.map(s => s.domain).join(', ')} (${errs[0].error}). ` +
-        (errs[0].error.includes('fetch') ? 'Probabile blocco CORS: imposta un prefisso proxy.' : '');
+        '';
       $('#out').appendChild(p);
     }
   }
