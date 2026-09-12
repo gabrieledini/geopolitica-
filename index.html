@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Convergenza — tono delle fonti per tema</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Serif:wght@600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{
+  --paper:#eef1f4; --ink:#1b2530; --muted:#5d6b78; --line:#cfd6dc; --panel:#fff;
+  --warn:#8a4b00; --ok:#0e6b4a;
+  --s1:#1f5fa8; --s2:#c8471e; --s3:#3a8f5c; --s4:#7a3fa0; --s5:#b08b00; --s6:#0f7f8f;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 "IBM Plex Sans",system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:20px 14px 60px}
+h1{font:600 30px/1.1 "IBM Plex Serif",Georgia,serif;margin:0 0 6px;letter-spacing:-.01em}
+.lead{color:var(--muted);margin:0 0 22px;max-width:60ch}
+form{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px;display:grid;gap:12px}
+label{display:grid;gap:4px;font-size:14px;color:var(--muted)}
+input,textarea,select{font:inherit;color:var(--ink);background:#fbfcfd;border:1px solid var(--line);border-radius:4px;padding:8px 10px;width:100%}
+textarea{min-height:76px;resize:vertical;font-size:14px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+button{font:600 16px/1 inherit;padding:12px 16px;border:0;border-radius:4px;background:var(--ink);color:#fff;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--s1);outline-offset:2px}
+.status{font-size:14px;color:var(--muted);min-height:1.5em}
+.theme{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px;margin-top:16px}
+.theme h2{font:600 20px/1.2 "IBM Plex Serif",Georgia,serif;margin:0}
+.theme .kw{color:var(--muted);font-size:13px;margin:2px 0 10px}
+.verdict{font-size:14px;margin:0 0 10px;padding:8px 10px;border-radius:4px;background:#f3f5f7}
+.verdict.ok{color:var(--ok)} .verdict.warn{color:var(--warn)}
+canvas{width:100%!important;height:260px!important}
+.err{color:#9b1c1c;font-size:14px}
+details{margin-top:18px;font-size:14px;color:var(--muted)}
+summary{cursor:pointer;color:var(--ink)}
+@media (max-width:520px){.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>Le fonti convergono?</h1>
+<p class="lead">Per ogni tema, il tono medio con cui diverse fonti parlano di uno stato, settimana per settimana, e quanto quelle voci si allontanano o si avvicinano tra loro. Dati GDELT, nessuna chiave richiesta.</p>
+
+<form id="cfg" onsubmit="return false">
+  <div class="row">
+    <label>Stato
+      <input id="state" value="Iran">
+    </label>
+    <label>Periodo
+      <select id="span">
+        <option value="4w">4 settimane</option>
+        <option value="12w" selected>12 settimane</option>
+        <option value="6m">6 mesi</option>
+        <option value="12m">12 mesi</option>
+      </select>
+    </label>
+  </div>
+  <label>Temi — una riga per tema: <i>etichetta | parole chiave</i>
+    <textarea id="themes">Sanzioni | sanctions
+Nucleare | nuclear
+Israele | israel</textarea>
+  </label>
+  <label>Fonti — un dominio per riga (max 6)
+    <textarea id="sources">reuters.com
+aljazeera.com
+rt.com
+xinhuanet.com</textarea>
+  </label>
+  <label>Prefisso proxy CORS (solo se il browser blocca le richieste dirette)
+    <input id="proxy" placeholder="es. https://tuo-sito.netlify.app/.netlify/functions/gdelt?url=">
+  </label>
+  <button id="run" type="button">Analizza</button>
+  <div class="status" id="status"></div>
+</form>
+
+<div id="out"></div>
+
+<details>
+  <summary>Come leggere i grafici</summary>
+  <p>Le linee colorate sono il tono medio (GDELT, scala circa −10…+10) degli articoli di ciascuna fonte che citano lo stato e le parole chiave del tema. La linea grigia tratteggiata è la deviazione standard tra le fonti in quella settimana: quando scende, le fonti stanno convergendo; quando sale, divergono. Il tono è un proxy grezzo della posizione: misura quanto il linguaggio è positivo o negativo, non a favore di chi. Settimane senza articoli per una fonte vengono ignorate nel calcolo.</p>
+  <p>GDELT accetta circa una richiesta ogni 5 secondi: con 3 temi e 4 fonti l'analisi dura circa un minuto.</p>
+</details>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const COLORS = ['--s1','--s2','--s3','--s4','--s5','--s6'].map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim());
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let charts = [];
+
+function parseThemes(t){
+  return t.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    const [label, kw] = l.split('|').map(s => (s || '').trim());
+    return { label, kw: kw || label };
+  });
+}
+function parseSources(t){
+  return t.split('\n').map(l => l.trim().toLowerCase()).filter(Boolean).slice(0, 6);
+}
+
+async function fetchTone(state, kw, domain, span, proxy){
+  const q = `${state} ${kw} domain:${domain}`;
+  const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=timelinetone&timespan=${span}&timelinesmooth=2&format=json`;
+  const res = await fetch(proxy ? proxy + encodeURIComponent(url) : url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error(text.slice(0, 120) || 'risposta non JSON'); }
+  const series = (json.timeline || [])[0];
+  const map = new Map();
+  (series?.data || []).forEach(p => map.set(p.date.slice(0, 8), p.value));
+  return map;
+}
+
+function weekKey(yyyymmdd){
+  const d = new Date(+yyyymmdd.slice(0,4), +yyyymmdd.slice(4,6)-1, +yyyymmdd.slice(6,8));
+  const day = (d.getDay() + 6) % 7;         // lunedì = 0
+  d.setDate(d.getDate() - day);
+  return d.toISOString().slice(0, 10);
+}
+
+function aggregate(perSource){
+  // perSource: [{domain, map(date->tone)}] -> settimane ordinate, tone medio per fonte, std tra fonti
+  const weeks = new Set();
+  const bySrc = perSource.map(s => {
+    const acc = new Map();
+    s.map.forEach((v, d) => {
+      if (!v) return;                          // 0 = nessun articolo quel giorno
+      const w = weekKey(d); weeks.add(w);
+      const a = acc.get(w) || { sum: 0, n: 0 }; a.sum += v; a.n++; acc.set(w, a);
+    });
+    return { domain: s.domain, weekly: acc };
+  });
+  const labels = [...weeks].sort();
+  const lines = bySrc.map(s => labels.map(w => { const a = s.weekly.get(w); return a ? +(a.sum / a.n).toFixed(2) : null; }));
+  const std = labels.map((w, i) => {
+    const vals = lines.map(l => l[i]).filter(v => v !== null);
+    if (vals.length < 2) return null;
+    const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+    return +Math.sqrt(vals.reduce((a, b) => a + (b - m) ** 2, 0) / vals.length).toFixed(2);
+  });
+  return { labels, lines, std };
+}
+
+function verdict(std){
+  const v = std.filter(x => x !== null);
+  if (v.length < 4) return { cls: '', text: 'Troppo poche settimane con dati per valutare la tendenza.' };
+  const third = Math.max(1, Math.floor(v.length / 3));
+  const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  const first = mean(v.slice(0, third)), last = mean(v.slice(-third));
+  const delta = (last - first) / (first || 1);
+  if (delta < -0.2) return { cls: 'ok', text: `Convergenza: la distanza tra le fonti è scesa da ${first.toFixed(2)} a ${last.toFixed(2)}.` };
+  if (delta > 0.2)  return { cls: 'warn', text: `Divergenza: la distanza tra le fonti è salita da ${first.toFixed(2)} a ${last.toFixed(2)}.` };
+  return { cls: '', text: `Stabile: distanza tra le fonti intorno a ${last.toFixed(2)}.` };
+}
+
+function render(theme, agg, container){
+  const { labels, lines, std } = agg;
+  const v = verdict(std);
+  const card = document.createElement('section'); card.className = 'theme';
+  card.innerHTML = `<h2>${theme.label}</h2><p class="kw">${$('#state').value} + “${theme.kw}”</p>
+    <p class="verdict ${v.cls}">${v.text}</p><canvas></canvas>`;
+  container.appendChild(card);
+  const ds = lines.map((l, i) => ({
+    label: theme.sources[i], data: l, borderColor: COLORS[i], backgroundColor: COLORS[i],
+    borderWidth: 2, pointRadius: 2, spanGaps: true, tension: .25, yAxisID: 'y'
+  }));
+  ds.push({ label: 'distanza tra fonti (σ)', data: std, borderColor: '#7b8790', borderDash: [5, 4],
+    borderWidth: 2, pointRadius: 0, spanGaps: true, tension: .25, yAxisID: 'y2' });
+  charts.push(new Chart(card.querySelector('canvas'), {
+    type: 'line',
+    data: { labels: labels.map(l => l.slice(5).replace('-', '/')), datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { boxWidth: 12, font: { size: 12 } } } },
+      scales: {
+        y:  { title: { display: true, text: 'tono' }, grid: { color: '#e6eaee' } },
+        y2: { position: 'right', min: 0, title: { display: true, text: 'σ' }, grid: { drawOnChartArea: false } },
+        x:  { ticks: { maxTicksLimit: 8, font: { size: 11 } } }
+      }
+    }
+  }));
+}
+
+$('#run').addEventListener('click', async () => {
+  const state = $('#state').value.trim();
+  const themes = parseThemes($('#themes').value);
+  const sources = parseSources($('#sources').value);
+  const span = $('#span').value, proxy = $('#proxy').value.trim();
+  if (!state || !themes.length || sources.length < 2) { $('#status').textContent = 'Servono uno stato, almeno un tema e almeno due fonti.'; return; }
+
+  charts.forEach(c => c.destroy()); charts = [];
+  $('#out').innerHTML = ''; $('#run').disabled = true;
+  const total = themes.length * sources.length; let done = 0;
+
+  for (const theme of themes) {
+    const perSource = [];
+    for (const domain of sources) {
+      $('#status').textContent = `${done + 1}/${total} — ${theme.label}, ${domain}`;
+      try {
+        perSource.push({ domain, map: await fetchTone(state, theme.kw, domain, span, proxy) });
+      } catch (e) {
+        perSource.push({ domain, map: new Map(), error: e.message });
+      }
+      done++;
+      if (done < total) await sleep(5200);
+    }
+    theme.sources = sources;
+    const agg = aggregate(perSource);
+    if (agg.labels.length) render(theme, agg, $('#out'));
+    const errs = perSource.filter(s => s.error);
+    if (errs.length) {
+      const p = document.createElement('p'); p.className = 'err theme';
+      p.textContent = `${theme.label}: nessun dato da ${errs.map(s => s.domain).join(', ')} (${errs[0].error}). ` +
+        (errs[0].error.includes('fetch') ? 'Probabile blocco CORS: imposta un prefisso proxy.' : '');
+      $('#out').appendChild(p);
+    }
+  }
+  $('#status').textContent = 'Analisi completata.';
+  $('#run').disabled = false;
+});
+</script>
+</body>
+</html>
